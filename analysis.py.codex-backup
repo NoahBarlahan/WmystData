@@ -1,0 +1,196 @@
+import pandas as pd
+import streamlit as st
+from pathlib import Path
+from collections import Counter
+import re
+
+st.set_page_config(
+    page_title="Wmyst Dashboard",
+    page_icon="😊",
+    layout="wide"
+)
+
+st.title("😊 Wmyst Happiness Dashboard")
+
+private_excel = Path("private_data/realwmyst.xlsx")
+private_csv = Path("private_data/realwmyst.csv")
+sample_csv = Path("data/sample_data.csv")
+
+
+@st.cache_data
+def load_data():
+    if private_excel.exists():
+        df = pd.read_excel(private_excel)
+        source = "Private Excel file"
+    elif private_csv.exists():
+        df = pd.read_csv(private_csv)
+        source = "Private CSV file"
+    elif sample_csv.exists():
+        df = pd.read_csv(sample_csv)
+        source = "Sample CSV file"
+    else:
+        raise FileNotFoundError(
+            "Could not find private_data/realwmyst.xlsx, "
+            "private_data/realwmyst.csv, or data/sample_data.csv"
+        )
+
+    df = df[["Unnamed: 0", "Day Rating", "Wmyst"]]
+
+    df = df.rename(columns={
+        "Unnamed: 0": "Date",
+        "Day Rating": "Rating",
+        "Wmyst": "Smile"
+    })
+
+    df = df.dropna(subset=["Date", "Rating", "Smile"])
+
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    df["Rating"] = pd.to_numeric(df["Rating"], errors="coerce")
+
+    df = df.dropna(subset=["Date", "Rating"])
+    df = df.sort_values("Date")
+
+    return df, source
+
+
+def get_common_words(text_series, top_n=20):
+    stop_words = {
+        "the", "and", "a", "an", "to", "of", "in", "on", "for", "with",
+        "at", "by", "from", "up", "out", "as", "is", "was", "were", "be",
+        "been", "being", "it", "this", "that", "these", "those", "i",
+        "me", "my", "we", "our", "you", "your", "he", "she", "they",
+        "them", "his", "her", "their", "went", "got", "had", "did",
+        "day", "today", "really", "very", "just", "also", "then"
+    }
+
+    all_text = " ".join(text_series.astype(str)).lower()
+    words = re.findall(r"\b[a-zA-Z']+\b", all_text)
+
+    filtered_words = [
+        word for word in words
+        if word not in stop_words and len(word) > 2
+    ]
+
+    return Counter(filtered_words).most_common(top_n)
+
+
+df, source = load_data()
+
+st.caption(f"Loaded from: {source}")
+
+# Sidebar
+st.sidebar.header("Filters")
+
+min_date = df["Date"].min().date()
+max_date = df["Date"].max().date()
+
+date_range = st.sidebar.date_input(
+    "Date range",
+    value=(min_date, max_date),
+    min_value=min_date,
+    max_value=max_date
+)
+
+if len(date_range) == 2:
+    start_date, end_date = date_range
+    filtered_df = df[
+        (df["Date"].dt.date >= start_date) &
+        (df["Date"].dt.date <= end_date)
+    ]
+else:
+    filtered_df = df.copy()
+
+# Overview metrics
+st.subheader("Overview")
+
+col1, col2, col3, col4 = st.columns(4)
+
+col1.metric("Average Rating", round(filtered_df["Rating"].mean(), 2))
+col2.metric("Highest Rating", filtered_df["Rating"].max())
+col3.metric("Lowest Rating", filtered_df["Rating"].min())
+col4.metric("Days Tracked", len(filtered_df))
+
+# Rating over time
+st.subheader("Rating Over Time")
+
+st.line_chart(
+    filtered_df.set_index("Date")[["Rating"]]
+)
+
+# Most common words
+st.subheader("Most Common Words")
+
+common_words = get_common_words(filtered_df["Smile"], top_n=20)
+
+words_df = pd.DataFrame(common_words, columns=["Word", "Count"])
+
+col1, col2 = st.columns([2, 1])
+
+with col1:
+    st.bar_chart(words_df.set_index("Word"))
+
+with col2:
+    st.dataframe(words_df, use_container_width=True)
+
+# Highest rated months
+st.subheader("Highest Rated Months")
+
+monthly_df = filtered_df.copy()
+monthly_df["Month"] = monthly_df["Date"].dt.to_period("M").astype(str)
+
+monthly_stats = (
+    monthly_df
+    .groupby("Month")
+    .agg(
+        Average_Rating=("Rating", "mean"),
+        Days_Tracked=("Rating", "count")
+    )
+    .reset_index()
+)
+
+monthly_stats["Average_Rating"] = monthly_stats["Average_Rating"].round(2)
+
+highest_months = monthly_stats.sort_values(
+    "Average_Rating",
+    ascending=False
+).head(10)
+
+st.dataframe(highest_months, use_container_width=True)
+
+st.bar_chart(
+    highest_months.set_index("Month")[["Average_Rating"]]
+)
+
+# Lowest rated periods
+st.subheader("Lowest Rated Periods")
+
+st.write("These are your lowest 7-day rolling average periods.")
+
+rolling_df = filtered_df.copy()
+rolling_df = rolling_df.set_index("Date")
+rolling_df["7 Day Average"] = rolling_df["Rating"].rolling("7D").mean()
+
+lowest_periods = (
+    rolling_df
+    .dropna(subset=["7 Day Average"])
+    .reset_index()
+    .sort_values("7 Day Average")
+    .head(10)
+)
+
+lowest_periods["7 Day Average"] = lowest_periods["7 Day Average"].round(2)
+
+st.dataframe(
+    lowest_periods[["Date", "Rating", "7 Day Average", "Smile"]],
+    use_container_width=True
+)
+
+# Recent entries
+st.subheader("Recent Entries")
+
+recent_entries = filtered_df.sort_values("Date", ascending=False).head(20)
+
+st.dataframe(
+    recent_entries,
+    use_container_width=True
+)
